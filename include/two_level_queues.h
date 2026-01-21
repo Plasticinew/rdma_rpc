@@ -13,12 +13,13 @@
 #define MID_MEM_WATERMARK (12UL << 10)
 #define HIGH_MEM_WATERMARK (16UL << 10)
 #define MAX_QUEUE_LEN (20UL << 10)
+#define MEM_NODE_NUM 4
 
 #define ALLOCATOR_DEVICE "/allocator_page_queue"
 #define DEALLOCATOR_DEVICE "/deallocator_page_queue"
 
 struct allocator_page_queue {
-    std::atomic<int32_t> rkey;
+    std::atomic<int32_t> rkey[MEM_NODE_NUM];
     std::atomic<int64_t> begin;
     std::atomic<int64_t> end;
     std::atomic<int64_t> pages[ALLOCATE_BUFFER_SIZE];
@@ -59,7 +60,9 @@ int page_queue_shm_init() {
   //memset(queue_allocator, 0, sizeof(struct allocator_page_queue));
   for(uint32_t i = 0;i < NUM_ONLINE_CPUS; ++i) {
     auto queue_allocator = &queues_allocator->queues[i];
-    queue_allocator->rkey.store(0);
+    for(uint32_t j = 0; j < MEM_NODE_NUM; ++j) {
+        queue_allocator->rkey[j].store(0);
+    }
     queue_allocator->begin.store(0);
     queue_allocator->end.store(0);
     for(uint32_t j = 0;j < ALLOCATE_BUFFER_SIZE; ++j) {
@@ -172,7 +175,7 @@ struct local_pool {
     return true;
   }
 
-  local_pool(kv::LocalEngine *kv) : conn(kv), begin(0), end(0), length(0), capacity(MAX_QUEUE_LEN) {
+  local_pool(kv::LocalEngine *kv, uint16_t mnode_num) : conn(kv), begin(0), end(0), length(0), capacity(MAX_QUEUE_LEN), mnode_num(mnode_num) {
     int ret;
     remote_addrs = new uint64_t[capacity];
     assert(conn != nullptr);
@@ -183,6 +186,8 @@ struct local_pool {
 
 private:
   kv::LocalEngine *conn;
+  uint16_t mnode_num = 1;
+  uint16_t round_robin = 0;
   uint64_t* remote_addrs;
   uint64_t begin;
   uint64_t end;
@@ -194,20 +199,29 @@ private:
     assert(size + length <= capacity);
     int ret;
     if(capacity - end >= size) {
-      ret = conn->allocate_remote_page_batch(remote_addrs + end, size);
+      ret = conn[round_robin].allocate_remote_page_batch(remote_addrs + end, size);
       if(ret) {
         std::cout << "allocate_remote_page_batch fail." << std::endl;
       }
+      for(uint64_t i = 0; i < size; ++i) {
+        remote_addrs[(end + i) % capacity] &= ~(0x7FUL << 57); // 清除高7位的m
+        remote_addrs[(end + i) % capacity] += (round_robin << 57);
+      }
     } else {
       uint64_t remote_addrs_tmp[MAX_BATCH_SIZE];
-      ret = conn->allocate_remote_page_batch(remote_addrs_tmp, size);
+      ret = conn[round_robin].allocate_remote_page_batch(remote_addrs_tmp, size);
       if(ret) {
         std::cout << "allocate_remote_page_batch fail." << std::endl;
       }
       uint64_t size_first = capacity - end;
       std::copy(remote_addrs_tmp, remote_addrs_tmp + size_first, remote_addrs + end);
       std::copy(remote_addrs_tmp + size_first, remote_addrs_tmp + size, remote_addrs);
+      for(uint64_t i = 0; i < size; ++i) {
+        remote_addrs[(end + i) % capacity] &= ~(0x4UL << 57); // 清除高4位的m
+        remote_addrs[(end + i) % capacity] += (round_robin << 57);
+      }
     }
+    round_robin = (round_robin + 1) % mnode_num;
     end = (end + size) % capacity;
     length += size;
   }
@@ -217,21 +231,30 @@ private:
 
     int ret;
     if (begin + size <= capacity) {
-        ret = conn->free_remote_page_batch(remote_addrs + begin, size);
+      for(int i = 0; i < size; ++i) {
+        uint64_t addr = remote_addrs[(begin + i) % capacity];
+        uint16_t mnode = (addr >> 57);
+        addr &= ~(0x4UL << 57); // 清除高4位的m
+        ret = conn[mnode].free_remote_page(addr);
         if (ret) {
             std::cerr << "free_remote_page_batch fail." << std::endl;
             return;
         }
+      }
     } else {
         uint64_t size_first = capacity - begin;
         uint64_t remote_addrs_tmp[MAX_BATCH_SIZE];
         std::copy(remote_addrs + begin, remote_addrs + capacity, remote_addrs_tmp);
         std::copy(remote_addrs, remote_addrs + size-size_first, remote_addrs_tmp + size_first);
-
-        ret = conn->free_remote_page_batch(remote_addrs_tmp, size);
-        if (ret) {
-            std::cerr << "free_remote_page_batch fail." << std::endl;
-            return;
+        for(int i = 0; i < size; ++i) {
+          uint64_t addr = remote_addrs_tmp[i];
+          uint16_t mnode = (addr >> 57);
+          addr &= ~(0x4UL << 57); // 清除高4位的m
+          ret = conn[mnode].free_remote_page(addr);
+          if (ret) {
+              std::cerr << "free_remote_page_batch fail." << std::endl;
+              return;
+          }
         }
     }
     begin = (begin + size) % capacity;

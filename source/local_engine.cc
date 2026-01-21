@@ -19,6 +19,11 @@ bool LocalEngine::start(const std::string addr, const std::string port) {
   return false;
 }
 
+bool LocalEngine::set_mnode(uint16_t mnode) {
+  m_mnode_ = mnode;
+  return true;
+}
+
 /**
  * @description: stop local engine service
  * @return {void}

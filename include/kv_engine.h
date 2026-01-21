@@ -189,6 +189,7 @@ class LocalEngine : public Engine {
   void stop() override;
   bool alive() override;
 
+  bool set_mnode(uint16_t mnode);
   bool write(const std::string key, const std::string value);
   bool read(const std::string key, std::string &value);
   bool write_block(uint64_t laddr, uint64_t raddr, uint64_t len, uint32_t rkey);
@@ -202,12 +203,13 @@ class LocalEngine : public Engine {
   int get_global_rkey(uint32_t& global_rkey);
 
  private:
-  kv::ConnectionManager *m_rdma_conn_;
+ kv::ConnectionManager *m_rdma_conn_;
   /* NOTE: should use some concurrent data structure, and also should take the
    * extra memory overhead into consideration */
   std::unordered_map<std::string, internal_value_t> m_map_[SHARDING_NUM];
   std::mutex m_mutex_[SHARDING_NUM];
   RDMAMemPool *m_rdma_mem_pool_;
+  uint16_t m_mnode_;
 };
 
 /* Remote-side engine */

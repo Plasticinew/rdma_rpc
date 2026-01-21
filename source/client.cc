@@ -9,9 +9,128 @@
 #include "rdma_mem_pool.h"
 #include "two_level_queues.h"
 
+static uint64_t mnode_num = 1;
+
+void reverse(char str[], int length) {
+   
+    int start = 0;
+    int end = length - 1;
+    while (start < end) {
+   
+        char temp = str[start];
+        str[start] = str[end];
+        str[end] = temp;
+        start++;
+        end--;
+    }
+}
+
+char* itoa(int num, char *str, int base) {
+   
+    int i = 0;
+    int isNegative = 0;
+
+    if (num == 0) {
+        str[i++] = '0';
+        str[i] = '\0';
+        return str;
+    }
+
+    if (num < 0 && base == 10) {
+        isNegative = 1;
+        num = -num;
+    }
+
+    while (num != 0) {
+        int rem = num % base;
+        str[i++] = (rem > 9) ? (rem - 10) + 'a' : rem + '0';
+        num = num / base;
+    }
+
+    if (isNegative) {
+        str[i++] = '-';
+    }
+
+    str[i] = '\0';
+    reverse(str, i);
+    return str;
+}
+
+int atoi(const char* str) 
+{
+	assert(str);
+	while (isspace(*str)) 
+	{
+		str++;
+	}
+	int is_positive = 1;
+	if (*str - '+' == 0 ) 
+	{
+		is_positive = 1;
+		str++;
+	}
+	if (*str - '-' == 0)
+	{
+		is_positive = 0;
+		str++;
+	}
+	long long result = 0;
+  while (isdigit(*str)) 
+	{
+		result *= 10;
+		result += *str - '0'; 
+		if (result > INT_MAX || result < INT_MIN) 
+		{
+			return result > INT_MAX ? INT_MAX : INT_MIN; 
+		}
+
+		str++;
+	}
+	return is_positive ? (result) : -result;
+}
+
+int ipstr_to_u8array(char* ip_str, int str_len, int* array){
+    char tmp[4] = { 0 };
+    int tmp_count = 0;
+    int array_count = 0;
+    char *ip_head = ip_str;
+    char *ip_end = &ip_str[str_len];
+    do{
+        if(*ip_head == '.' || ip_head == ip_end){
+            tmp_count = 0;
+            array[array_count] = atoi(tmp);
+            memset(tmp, 0, 4);
+            array_count++;
+        }
+        else{
+            tmp[tmp_count] = *ip_head;
+            tmp_count++;
+        }
+        ip_head++;
+    }while(ip_head <= ip_end);
+    return 0;
+}
+
+int u8array_to_ipstr(int* array, char* ip_str){
+    char temp[4] = {0};
+    itoa(array[0], temp, 10);
+    strcat(ip_str, temp);
+    strcat(ip_str, ".");
+    itoa(array[1], temp, 10);
+    strcat(ip_str, temp);
+    strcat(ip_str, ".");
+    itoa(array[2], temp, 10);
+    strcat(ip_str, temp);
+    strcat(ip_str, ".");
+    itoa(array[3], temp, 10);
+    strcat(ip_str, temp);
+    return 0;
+}
+
 int get_remote_global_rkey(kv::LocalEngine *kv_imp) {
-  uint32_t rkey = 0;
-  kv_imp->get_global_rkey(rkey);
+  uint32_t rkey[mnode_num];
+  for(int i = 0; i < mnode_num; i++)
+    kv_imp[i].get_global_rkey(rkey[i]);
   if(rkey == 0) {
     perror("get global rkey fail.\n");
     return -1;
@@ -20,7 +139,9 @@ int get_remote_global_rkey(kv::LocalEngine *kv_imp) {
   assert(queues_allocator != nullptr);
   for(uint32_t i = 0;i < NUM_ONLINE_CPUS; ++i) {
     auto queue_allocator = &queues_allocator->queues[i];
-    queue_allocator->rkey.store(rkey);
+    for(uint32_t j = 0; j < MEM_NODE_NUM; ++j) {
+      queue_allocator->rkey[j].store(rkey[j]);
+    }
   }
   return 0;
 }
@@ -52,7 +173,7 @@ void allocation_thread(kv::LocalEngine *kv_imp,  const std::vector<int>& online_
   uint64_t count = 0;
   std::vector<double> res;
   int ret;
-  local_pool* pool = new local_pool(kv_imp);
+  local_pool* pool = new local_pool(kv_imp, mnode_num);
 
   fill_allocate_page_queue(pool, online_cpus);
 
@@ -90,6 +211,7 @@ void allocation_thread(kv::LocalEngine *kv_imp,  const std::vector<int>& online_
 int main(int argc, char *argv[]) {
   const std::string rdma_addr(argv[1]);
   const std::string rdma_port(argv[2]);
+  mnode_num = atoi(argv[3]);
   //const uint64_t interval = atoi(argv[3]);
 
   page_queue_shm_init();
@@ -108,13 +230,24 @@ int main(int argc, char *argv[]) {
 
   std::vector<std::thread *> adaptive_scaler;
   for(auto v : online_cpus) {
-    kv::LocalEngine *kv_imp;
-    kv_imp = new kv::LocalEngine();
-    assert(kv_imp);
-    kv_imp->start(rdma_addr, rdma_port);
-    get_remote_global_rkey(kv_imp);
-    auto t = new std::thread(&allocation_thread, kv_imp, v);
-    adaptive_scaler.push_back(t);
+    char ip_temp[16] = {0};
+    int ip_array[4] = {0};
+    ipstr_to_u8array((char*)rdma_addr.c_str(), rdma_addr.length(), ip_array);
+    kv::LocalEngine *kv_imp = new kv::LocalEngine[MEM_NODE_NUM];
+      for(int i = 0; i < mnode_num; i++) {
+        // (kv_imp + i) = new kv::LocalEngine();
+        memset(ip_temp, 0, 16);
+        u8array_to_ipstr(ip_array, ip_temp);
+        // ipstr_to_u8array(ip_temp, strlen(ip_temp), ip_array);
+        assert(kv_imp);
+        // printf("%s\n", ip_temp);
+        kv_imp[i].start(ip_temp, rdma_port);
+        kv_imp[i].set_mnode(i);
+        ip_array[3] += 1;
+      }
+      get_remote_global_rkey(kv_imp);
+      auto t = new std::thread(&allocation_thread, kv_imp, v);
+      adaptive_scaler.push_back(t);
   }
 
   for(auto t : adaptive_scaler) {

@@ -39,7 +39,7 @@ void set_thread_affinity(std::thread* t, int core_id) {
 bool RemoteEngine::start( const std::string addr, const std::string port) {
   m_stop_ = false;
 
-  const std::string device = "mlx5_2";
+  const std::string device = "mlx5_0";
 
   m_worker_info_ = new WorkerInfo *[MAX_SERVER_WORKER];
   m_worker_threads_ = new std::thread *[MAX_SERVER_WORKER];
