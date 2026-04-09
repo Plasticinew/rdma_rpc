@@ -205,7 +205,7 @@ private:
       }
       for(uint64_t i = 0; i < size; ++i) {
         remote_addrs[(end + i) % capacity] &= ~(0x7FUL << 57); // 清除高7位的m
-        remote_addrs[(end + i) % capacity] += (round_robin << 57);
+        remote_addrs[(end + i) % capacity] += ((uint64_t)round_robin << 57);
       }
     } else {
       uint64_t remote_addrs_tmp[MAX_BATCH_SIZE];
@@ -218,7 +218,7 @@ private:
       std::copy(remote_addrs_tmp + size_first, remote_addrs_tmp + size, remote_addrs);
       for(uint64_t i = 0; i < size; ++i) {
         remote_addrs[(end + i) % capacity] &= ~(0x4UL << 57); // 清除高4位的m
-        remote_addrs[(end + i) % capacity] += (round_robin << 57);
+        remote_addrs[(end + i) % capacity] += ((uint64_t)round_robin << 57);
       }
     }
     round_robin = (round_robin + 1) % mnode_num;
