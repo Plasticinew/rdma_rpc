@@ -234,7 +234,7 @@ private:
       for(int i = 0; i < size; ++i) {
         uint64_t addr = remote_addrs[(begin + i) % capacity];
         uint16_t mnode = (addr >> 57);
-        addr &= ~(0x4UL << 57); // 清除高4位的m
+        addr &= ~((uint64_t)0x7FUL << 57); // 清除高4位的m
         ret = conn[mnode].free_remote_page(addr);
         if (ret) {
             std::cerr << "free_remote_page_batch fail." << std::endl;
@@ -249,7 +249,7 @@ private:
         for(int i = 0; i < size; ++i) {
           uint64_t addr = remote_addrs_tmp[i];
           uint16_t mnode = (addr >> 57);
-          addr &= ~(0x4UL << 57); // 清除高4位的m
+          addr &= ~((uint64_t)0x4UL << 57); // 清除高4位的m
           ret = conn[mnode].free_remote_page(addr);
           if (ret) {
               std::cerr << "free_remote_page_batch fail." << std::endl;
