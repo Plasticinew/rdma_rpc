@@ -201,12 +201,16 @@ private:
     if(capacity - end >= size) {
       ret = conn[round_robin].allocate_remote_page_batch(remote_addrs + end, size);
       if(ret) {
-        std::cout << "allocate_remote_page_batch fail." << std::endl;
+         std::cout << "allocate_remote_page_batch fail." << std::endl;
       }
       for(uint64_t i = 0; i < size; ++i) {
-        remote_addrs[(end + i) % capacity] &= ~(0x7FUL << 57); // 清除高7位的m
-        remote_addrs[(end + i) % capacity] += ((uint64_t)round_robin << 57);
-      }
+            if(round_robin != 0) {
+                remote_addrs[(end + i) % capacity] &= ~(((uint64_t)0x7FUL) << 57); // 清除高7位的m
+                // std::cout << "Malloc Remote address: " << remote_addrs[(end + i) % capacity] << ", ";
+                remote_addrs[(end + i) % capacity] += (((uint64_t)round_robin) << 57);
+                // std::cout << remote_addrs[(end + i) % capacity] << std::endl;
+            }
+        }
     } else {
       uint64_t remote_addrs_tmp[MAX_BATCH_SIZE];
       ret = conn[round_robin].allocate_remote_page_batch(remote_addrs_tmp, size);
@@ -217,9 +221,13 @@ private:
       std::copy(remote_addrs_tmp, remote_addrs_tmp + size_first, remote_addrs + end);
       std::copy(remote_addrs_tmp + size_first, remote_addrs_tmp + size, remote_addrs);
       for(uint64_t i = 0; i < size; ++i) {
-        remote_addrs[(end + i) % capacity] &= ~(0x4UL << 57); // 清除高4位的m
-        remote_addrs[(end + i) % capacity] += ((uint64_t)round_robin << 57);
-      }
+        if(round_robin != 0) {
+            remote_addrs[(end + i) % capacity] &= ~(((uint64_t)0x7FUL) << 57); // 清除高7位的m
+            // std::cout << "Malloc Remote address: " << remote_addrs[(end + i) % capacity] << ", ";
+            remote_addrs[(end + i) % capacity] += (((uint64_t)round_robin) << 57);
+            // std::cout << remote_addrs[(end + i) % capacity] << std::endl;
+        }
+    }
     }
     round_robin = (round_robin + 1) % mnode_num;
     end = (end + size) % capacity;
@@ -234,10 +242,14 @@ private:
       for(int i = 0; i < size; ++i) {
         uint64_t addr = remote_addrs[(begin + i) % capacity];
         uint16_t mnode = (addr >> 57);
-        addr &= ~((uint64_t)0x7FUL << 57); // 清除高4位的m
+        if(mnode != 0) {
+            // std::cout << "Free Remote address: " << addr << ", ";
+            addr &= ~(((uint64_t)0x7FUL) << 57); // 清除高4位的m
+            // std::cout << addr << std::endl;
+        }
         ret = conn[mnode].free_remote_page(addr);
         if (ret) {
-            std::cerr << "free_remote_page_batch fail." << std::endl;
+            std::cerr << "free_remote_page_batch fail: " << addr << std::endl;
             return;
         }
       }
@@ -249,10 +261,14 @@ private:
         for(int i = 0; i < size; ++i) {
           uint64_t addr = remote_addrs_tmp[i];
           uint16_t mnode = (addr >> 57);
-          addr &= ~((uint64_t)0x4UL << 57); // 清除高4位的m
+          if(mnode != 0 ) {
+            // std::cout << "Free Remote address: " << addr << ", ";
+            addr &= ~(((uint64_t)0x7FUL) << 57); // 清除高7位的m
+            // std::cout << addr << std::endl;
+          }
           ret = conn[mnode].free_remote_page(addr);
           if (ret) {
-              std::cerr << "free_remote_page_batch fail." << std::endl;
+              std::cerr << "free_remote_page_batch fail: " << addr << std::endl;
               return;
           }
         }

@@ -129,17 +129,20 @@ int u8array_to_ipstr(int* array, char* ip_str){
 
 int get_remote_global_rkey(kv::LocalEngine *kv_imp) {
   uint32_t rkey[mnode_num];
-  for(int i = 0; i < mnode_num; i++)
-    kv_imp[i].get_global_rkey(rkey[i]);
-  if(rkey == 0) {
-    perror("get global rkey fail.\n");
-    return -1;
-  }
+    for(int i = 0; i < mnode_num; i++){
+        kv_imp[i].get_global_rkey(rkey[i]);
+        if(rkey[i] == 0) {
+            perror("get global rkey fail.\n");
+            return -1;
+        } else {
+            std::cout << "global rkey of mnode " << i << " is " << rkey[i] << std::endl;
+        }
+    }
 
   assert(queues_allocator != nullptr);
   for(uint32_t i = 0;i < NUM_ONLINE_CPUS; ++i) {
     auto queue_allocator = &queues_allocator->queues[i];
-    for(uint32_t j = 0; j < MEM_NODE_NUM; ++j) {
+    for(uint32_t j = 0; j < mnode_num; ++j) {
       queue_allocator->rkey[j].store(rkey[j]);
     }
   }
