@@ -180,7 +180,9 @@ struct local_pool {
     remote_addrs = new uint64_t[capacity];
     assert(conn != nullptr);
     while(length < MID_MEM_WATERMARK) {
-      batch_allocate(MAX_BATCH_SIZE);
+      if (!batch_allocate(MAX_BATCH_SIZE)) {
+        usleep(1000);
+      }
     }
   }
 
@@ -195,13 +197,16 @@ private:
   uint64_t length;
   uint64_t batch_size;
 
-  void batch_allocate(uint64_t size) {
+  bool batch_allocate(uint64_t size) {
     assert(size + length <= capacity);
     int ret;
     if(capacity - end >= size) {
       ret = conn[round_robin].allocate_remote_page_batch(remote_addrs + end, size);
       if(ret) {
-         std::cout << "allocate_remote_page_batch fail." << std::endl;
+         std::cerr << "allocate_remote_page_batch fail on mnode "
+                   << round_robin << std::endl;
+         round_robin = (round_robin + 1) % mnode_num;
+         return false;
       }
       for(uint64_t i = 0; i < size; ++i) {
             if(round_robin != 0) {
@@ -215,7 +220,10 @@ private:
       uint64_t remote_addrs_tmp[MAX_BATCH_SIZE];
       ret = conn[round_robin].allocate_remote_page_batch(remote_addrs_tmp, size);
       if(ret) {
-        std::cout << "allocate_remote_page_batch fail." << std::endl;
+        std::cerr << "allocate_remote_page_batch fail on mnode "
+                  << round_robin << std::endl;
+        round_robin = (round_robin + 1) % mnode_num;
+        return false;
       }
       uint64_t size_first = capacity - end;
       std::copy(remote_addrs_tmp, remote_addrs_tmp + size_first, remote_addrs + end);
@@ -232,6 +240,7 @@ private:
     round_robin = (round_robin + 1) % mnode_num;
     end = (end + size) % capacity;
     length += size;
+    return true;
   }
 
   void batch_deallocate(uint64_t size) {

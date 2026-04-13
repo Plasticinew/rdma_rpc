@@ -97,23 +97,6 @@ bool RemoteEngine::start( const std::string addr, const std::string port) {
     return false;
   }
 
-  main_worker_thread_ = new std::thread(&RemoteEngine::main_worker, this);
-  set_thread_affinity(main_worker_thread_, CORE_ID);
-
-  m_conn_handler_ = new std::thread(&RemoteEngine::handle_connection, this);
-  
-
-  //m_conn_handler_->join();
-  /*
-  for (uint32_t i = 0; i < MAX_SERVER_WORKER; i++) {
-    if (m_worker_threads_[i] != nullptr) {
-      m_worker_threads_[i]->join();
-    }
-  }*/
-  
-  //main_worker_thread_->join();
-
-
   base_addr = mmap((void*)REMOTE_MEM_SIZE, REMOTE_MEM_SIZE, PROT_READ | PROT_WRITE, 
             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
   if(base_addr == MAP_FAILED) {
@@ -145,6 +128,21 @@ bool RemoteEngine::start( const std::string addr, const std::string port) {
   } else {
     std::cout << "page queue init success" << std::endl;
   }
+
+  main_worker_thread_ = new std::thread(&RemoteEngine::main_worker, this);
+  set_thread_affinity(main_worker_thread_, CORE_ID);
+
+  m_conn_handler_ = new std::thread(&RemoteEngine::handle_connection, this);
+
+  //m_conn_handler_->join();
+  /*
+  for (uint32_t i = 0; i < MAX_SERVER_WORKER; i++) {
+    if (m_worker_threads_[i] != nullptr) {
+      m_worker_threads_[i]->join();
+    }
+  }*/
+
+  //main_worker_thread_->join();
   /*
   base_addr = mmap((void*)0x1000000000, REMOTE_MEM_SIZE, PROT_READ | PROT_WRITE, 
             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
