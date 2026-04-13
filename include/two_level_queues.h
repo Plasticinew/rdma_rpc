@@ -7,7 +7,7 @@
 #define ALLOCATE_BUFFER_SIZE (512UL) // 16MB
 #define RECLAIM_ALLOCATE_BUFFER_SIZE (16 << 10) // 64MB
 #define DEALLOCATE_BUFFER_SIZE (16 << 10) // 64MB
-#define NUM_ONLINE_CPUS 144
+#define NUM_ONLINE_CPUS 128 // Must match kernel NUM_KFIFOS_{ALLOC,FREE}
 #define NUM_CPUS_PER_THREAD 48
 #define LOW_MEM_WATERMARK (8UL << 10)
 #define MID_MEM_WATERMARK (12UL << 10)
@@ -43,13 +43,15 @@ struct allocator_page_queues *queues_allocator = nullptr;
 struct deallocator_page_queues *queues_deallocator = nullptr;
 
 int page_queue_shm_init() {
-  int fd = shm_open(ALLOCATOR_DEVICE, O_RDWR, 0);
+  int fd = shm_open(ALLOCATOR_DEVICE, O_CREAT | O_RDWR, 0600);
   if (fd < 0) {
-    fd = shm_open(ALLOCATOR_DEVICE, O_CREAT | O_EXCL | O_RDWR, 0600);
-    if (ftruncate(fd, sizeof(struct allocator_page_queues)) == -1) {
-      perror("ftruncate");
-      return -1;
-    }
+    perror("shm_open allocator");
+    return -1;
+  }
+  if (ftruncate(fd, sizeof(struct allocator_page_queues)) == -1) {
+    perror("ftruncate");
+    close(fd);
+    return -1;
   }
   queues_allocator = (struct allocator_page_queues *)mmap(NULL, sizeof(struct allocator_page_queues), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (queues_allocator == MAP_FAILED) {
@@ -70,13 +72,15 @@ int page_queue_shm_init() {
     }
   }
 
-  fd = shm_open(DEALLOCATOR_DEVICE, O_RDWR, 0);
+  fd = shm_open(DEALLOCATOR_DEVICE, O_CREAT | O_RDWR, 0600);
   if (fd < 0) {
-    fd = shm_open(DEALLOCATOR_DEVICE, O_CREAT | O_EXCL | O_RDWR, 0600);
-    if (ftruncate(fd, sizeof(struct deallocator_page_queues)) == -1) {
-      perror("ftruncate");
-      return -1;
-    }
+    perror("shm_open deallocator");
+    return -1;
+  }
+  if (ftruncate(fd, sizeof(struct deallocator_page_queues)) == -1) {
+    perror("ftruncate");
+    close(fd);
+    return -1;
   }
   queues_deallocator = (deallocator_page_queues *)mmap(NULL, sizeof(struct deallocator_page_queues), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (queues_deallocator == MAP_FAILED) {

@@ -146,6 +146,8 @@ int get_remote_global_rkey(kv::LocalEngine *kv_imp) {
       queue_allocator->rkey[j].store(rkey[j]);
     }
   }
+  std::cout << "published global rkeys for " << mnode_num
+            << " memory nodes to allocator queues" << std::endl;
   return 0;
 }
 
@@ -177,6 +179,12 @@ void allocation_thread(kv::LocalEngine *kv_imp,  const std::vector<int>& online_
   std::vector<double> res;
   int ret;
   local_pool* pool = new local_pool(kv_imp, mnode_num);
+
+  if (!online_cpus.empty()) {
+    std::cout << "allocation thread online for cpu range ["
+              << online_cpus.front() << ", " << online_cpus.back()
+              << "], mnode_num=" << mnode_num << std::endl;
+  }
 
   fill_allocate_page_queue(pool, online_cpus);
 
@@ -243,7 +251,8 @@ int main(int argc, char *argv[]) {
         u8array_to_ipstr(ip_array, ip_temp);
         // ipstr_to_u8array(ip_temp, strlen(ip_temp), ip_array);
         assert(kv_imp);
-        // printf("%s\n", ip_temp);
+        std::cout << "connecting allocator client to mnode " << i
+                  << " at " << ip_temp << ":" << rdma_port << std::endl;
         kv_imp[i].start(ip_temp, rdma_port);
         kv_imp[i].set_mnode(i);
         ip_array[3] += 1;
