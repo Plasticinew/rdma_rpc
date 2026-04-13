@@ -210,8 +210,8 @@ void RemoteEngine::handle_connection() {
 
     if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST) {
       struct rdma_cm_id *cm_id = event->id;
-      rdma_ack_cm_event(event);
       ConnMesg msg = *(ConnMesg*)event->param.conn.private_data;
+      rdma_ack_cm_event(event);
       create_connection(cm_id, msg.access_type);
     } else if (event->event == RDMA_CM_EVENT_ESTABLISHED) {
       rdma_ack_cm_event(event);
@@ -234,7 +234,7 @@ int RemoteEngine::create_connection(struct rdma_cm_id *cm_id, uint8_t connect_ty
     return -1;
   }
 
-  struct ibv_cq *cq = ibv_create_cq(m_context_, 1, NULL, comp_chan, 0);
+  struct ibv_cq *cq = ibv_create_cq(m_context_, 128, NULL, comp_chan, 0);
   if (!cq) {
     perror("ibv_create_cq fail");
     return -1;
@@ -518,22 +518,24 @@ void RemoteEngine::main_worker() {
 
 void RemoteEngine::worker_handel_cq(ibv_cq * cq) {
   struct ibv_wc wc;
-  //work_info->cq_mutex.lock();
-  int rc = ibv_poll_cq(cq, 1, &wc);
-  if (rc > 0) {
-    if (IBV_WC_SUCCESS == wc.status) {
-      //
-    } else if (IBV_WC_WR_FLUSH_ERR == wc.status) {
-      perror("cmd_send IBV_WC_WR_FLUSH_ERR");  
-    } else if (IBV_WC_RNR_RETRY_EXC_ERR == wc.status) {
-      perror("cmd_send IBV_WC_RNR_RETRY_EXC_ERR"); 
+  while (true) {
+    int rc = ibv_poll_cq(cq, 1, &wc);
+    if (rc > 0) {
+      if (IBV_WC_SUCCESS == wc.status) {
+        continue;
+      } else if (IBV_WC_WR_FLUSH_ERR == wc.status) {
+        perror("cmd_send IBV_WC_WR_FLUSH_ERR");
+      } else if (IBV_WC_RNR_RETRY_EXC_ERR == wc.status) {
+        perror("cmd_send IBV_WC_RNR_RETRY_EXC_ERR");
+      } else {
+        perror("cmd_send ibv_poll_cq status error");
+      }
+    } else if (0 == rc) {
+      break;
     } else {
-      perror("cmd_send ibv_poll_cq status error"); 
+      perror("ibv_poll_cq fail");
+      break;
     }
-  } else if (0 == rc) {
-    //
-  } else {
-    perror("ibv_poll_cq fail");
   }
   return;
 }
