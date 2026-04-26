@@ -8,6 +8,24 @@
 const uint64_t TOTAL_PAGES =  8ULL * 1024 * 1024;
 const uint64_t REMOTE_MEM_SIZE =  TOTAL_PAGES << PAGE_SHIFT;
 
+namespace {
+
+inline uint64_t pages_to_bytes(uint64_t pages) {
+  return pages << PAGE_SHIFT;
+}
+
+inline void set_memory_node_free_bytes(kv::MemoryNodeStatus *status,
+                                       uint64_t free_bytes) {
+  __atomic_store_n(&status->free_bytes, free_bytes, __ATOMIC_RELAXED);
+}
+
+inline void adjust_memory_node_free_bytes(kv::MemoryNodeStatus *status,
+                                          int64_t delta_bytes) {
+  __atomic_fetch_add(&status->free_bytes, delta_bytes, __ATOMIC_RELAXED);
+}
+
+}  // namespace
+
 
 namespace kv {
 
@@ -128,6 +146,30 @@ bool RemoteEngine::start( const std::string addr, const std::string port) {
   } else {
     std::cout << "page queue init success" << std::endl;
   }
+
+  memory_node_status_ = new MemoryNodeStatus();
+  if (!memory_node_status_) {
+    perror("memory node status alloc fail");
+    return false;
+  }
+  // This MR is intentionally tiny and read-mostly: clients only poll free space from it.
+  memset(memory_node_status_, 0, sizeof(MemoryNodeStatus));
+  memory_node_status_->total_bytes = REMOTE_MEM_SIZE;
+  memory_node_status_->page_size = 1UL << PAGE_SHIFT;
+  set_memory_node_free_bytes(memory_node_status_,
+                             pages_to_bytes(this->page_queue->page_num));
+  memory_node_status_mr_ =
+      rdma_register_memory(memory_node_status_, sizeof(MemoryNodeStatus));
+  if (!memory_node_status_mr_) {
+    perror("memory node status register fail");
+    return false;
+  }
+  std::cout << "memory status MR ready: addr "
+            << reinterpret_cast<uint64_t>(memory_node_status_)
+            << " rkey " << memory_node_status_mr_->rkey
+            << " free_bytes " << memory_node_status_->free_bytes
+            << " total_bytes " << memory_node_status_->total_bytes
+            << std::endl;
 
   main_worker_thread_ = new std::thread(&RemoteEngine::main_worker, this);
   set_thread_affinity(main_worker_thread_, CORE_ID);
@@ -343,6 +385,11 @@ int RemoteEngine::allocate_page(uint64_t &addr) {
   //page_queue->mtx.lock();
   ret = this->page_queue->allocate(addr);
   //page_queue->mtx.unlock();
+  if (!ret) {
+    // Keep the exported free-space view in sync with the allocator fast path.
+    adjust_memory_node_free_bytes(memory_node_status_,
+                                  -static_cast<int64_t>(1UL << PAGE_SHIFT));
+  }
   return ret;
 }
 
@@ -358,6 +405,11 @@ int RemoteEngine::allocate_page_batch(uint64_t* addrs, int num) {
   //page_queue->mtx.lock();
   ret = this->page_queue->allocate_batch(addrs, num);
   //page_queue->mtx.unlock();
+  if (!ret) {
+    // Batch RPCs update the same shared status so compute-side placement stays current.
+    adjust_memory_node_free_bytes(memory_node_status_,
+                                  -static_cast<int64_t>(pages_to_bytes(num)));
+  }
   return ret;
 }
 
@@ -396,6 +448,10 @@ int RemoteEngine::free_page(uint64_t addr) {
   //page_queue->mtx.lock();
   ret = this->page_queue->free(addr);
   //page_queue->mtx.unlock();
+  if (!ret) {
+    adjust_memory_node_free_bytes(memory_node_status_,
+                                  static_cast<int64_t>(1UL << PAGE_SHIFT));
+  }
   return ret;
 }
 
@@ -405,6 +461,10 @@ int RemoteEngine::free_page_batch(uint64_t* addrs, int num) {
   //page_queue->mtx.lock();
   ret = this->page_queue->free_batch(addrs, num);
   //page_queue->mtx.unlock();
+  if (!ret) {
+    adjust_memory_node_free_bytes(memory_node_status_,
+                                  static_cast<int64_t>(pages_to_bytes(num)));
+  }
   return ret;
 }
 
@@ -673,7 +733,12 @@ void RemoteEngine::worker(WorkerInfo *work_info, uint32_t num) {
     GetGlobalRKeyResponse *resp_msg = (GetGlobalRKeyResponse *)cmd_resp;
 
     assert(global_mr != nullptr);
+    assert(memory_node_status_mr_ != nullptr);
+    resp_msg->status = RES_OK;
     resp_msg->global_rkey = global_mr->rkey;
+    // Clients use this sideband MR for one-sided polling before choosing a memory node.
+    resp_msg->memory_status_addr = reinterpret_cast<uint64_t>(memory_node_status_);
+    resp_msg->memory_status_rkey = memory_node_status_mr_->rkey;
 
     remote_write(work_info, (uint64_t)cmd_resp, resp_mr->lkey,
                  sizeof(CmdMsgRespBlock), reg_req->resp_addr,
