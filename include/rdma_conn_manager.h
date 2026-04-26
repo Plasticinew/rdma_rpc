@@ -52,7 +52,8 @@ class ConnectionManager {
   int free_remote_page(uint64_t value);
   int free_remote_page_batch(uint64_t* addrs, int num);
   int register_remote_memory(uint64_t &addr, uint32_t &rkey, uint64_t size);
-  int get_global_rkey(uint32_t& global_rkey);
+  int get_global_rkey(uint32_t& global_rkey, uint64_t& memory_status_addr,
+                      uint32_t& memory_status_rkey);
   int remote_read(void *ptr, uint32_t size, uint64_t remote_addr,
                   uint32_t rkey);
   int remote_write(void *ptr, uint32_t size, uint64_t remote_addr,

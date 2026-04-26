@@ -130,12 +130,17 @@ int u8array_to_ipstr(int* array, char* ip_str){
 int get_remote_global_rkey(kv::LocalEngine *kv_imp) {
   uint32_t rkey[mnode_num];
     for(int i = 0; i < mnode_num; i++){
-        kv_imp[i].get_global_rkey(rkey[i]);
-        if(rkey[i] == 0) {
+        uint64_t memory_status_addr = 0;
+        uint32_t memory_status_rkey = 0;
+        if (kv_imp[i].get_global_rkey(rkey[i], memory_status_addr,
+                                      memory_status_rkey)) {
             perror("get global rkey fail.\n");
             return -1;
         } else {
             std::cout << "global rkey of mnode " << i << " is " << rkey[i] << std::endl;
+            std::cout << "memory status MR of mnode " << i << " addr "
+                      << memory_status_addr << " rkey "
+                      << memory_status_rkey << std::endl;
         }
     }
 

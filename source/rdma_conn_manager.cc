@@ -52,10 +52,13 @@ int ConnectionManager::allocate_remote_block(uint64_t &addr, uint32_t &rkey) {
   return ret;
 }
 
-int ConnectionManager::get_global_rkey(uint32_t& global_rkey) {
+int ConnectionManager::get_global_rkey(uint32_t& global_rkey,
+                                       uint64_t& memory_status_addr,
+                                       uint32_t& memory_status_rkey) {
   RDMAConnection *conn = m_rpc_conn_queue_->dequeue();
   assert(conn != nullptr);
-  int ret = conn->rdma_get_global_rkey(global_rkey);
+  int ret = conn->rdma_get_global_rkey(global_rkey, memory_status_addr,
+                                       memory_status_rkey);
   m_rpc_conn_queue_->enqueue(conn);
   return ret;
 }

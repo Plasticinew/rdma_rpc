@@ -97,11 +97,27 @@ bool LocalEngine::write(const std::string key, const std::string value) {
 bool LocalEngine::write_block(uint64_t laddr, uint64_t raddr, uint64_t len, uint32_t rkey) {
   int ret = m_rdma_conn_->remote_write((void *)laddr, len,
                                        raddr, rkey);
+  return ret == 0;
 }
 
 bool LocalEngine::read_block(uint64_t laddr, uint64_t raddr, uint64_t len, uint32_t rkey) {
   int ret = m_rdma_conn_->remote_read((void *)laddr, len,
                                        raddr, rkey);
+  return ret == 0;
+}
+
+int LocalEngine::read_remote_buffer(void *buf, uint64_t len, uint64_t remote_addr,
+                                    uint32_t rkey) {
+  return m_rdma_conn_->remote_read(buf, len, remote_addr, rkey);
+}
+
+int LocalEngine::read_memory_node_status(MemoryNodeStatus& status) {
+  if (m_memory_status_addr_ == 0 || m_memory_status_rkey_ == 0) {
+    return -1;
+  }
+  // Each LocalEngine instance caches the status MR metadata of its paired memory node.
+  return read_remote_buffer(&status, sizeof(status), m_memory_status_addr_,
+                            m_memory_status_rkey_);
 }
 
 int LocalEngine::allocate_remote_page(uint64_t& addr) {
@@ -114,8 +130,15 @@ int LocalEngine::allocate_remote_block(uint64_t& addr, uint32_t& rkey) {
   return ret;
 }
 
-int LocalEngine::get_global_rkey(uint32_t& global_rkey) {
-  int ret = m_rdma_conn_->get_global_rkey(global_rkey);
+int LocalEngine::get_global_rkey(uint32_t& global_rkey,
+                                 uint64_t& memory_status_addr,
+                                 uint32_t& memory_status_rkey) {
+  int ret = m_rdma_conn_->get_global_rkey(global_rkey, memory_status_addr,
+                                          memory_status_rkey);
+  if (ret == 0) {
+    m_memory_status_addr_ = memory_status_addr;
+    m_memory_status_rkey_ = memory_status_rkey;
+  }
   return ret;
 }
 

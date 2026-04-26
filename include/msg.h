@@ -36,6 +36,14 @@ struct PData {
   uint32_t size;
 };
 
+struct alignas(64) MemoryNodeStatus {
+  // Exposed as a tiny MR so compute nodes can poll memory pressure via one-sided RDMA reads.
+  uint64_t free_bytes;
+  uint64_t total_bytes;
+  uint64_t page_size;
+  uint64_t reserved;
+};
+
 struct CmdMsgBlock {
   uint8_t rsvd1[MAX_MSG_SIZE - 1];
   volatile uint8_t notify;
@@ -142,8 +150,10 @@ CHECK_RDMA_MSG_SIZE(GetGlobalRKeyRequest);
 class GetGlobalRKeyResponse : public ResponseMsg {
  public:
  uint32_t global_rkey;
+ uint64_t memory_status_addr;
+ uint32_t memory_status_rkey;
 };
-CHECK_RDMA_MSG_SIZE(FreePageBatchResponse);
+CHECK_RDMA_MSG_SIZE(GetGlobalRKeyResponse);
 
 struct UnregisterRequest : public RequestsMsg {
  public:

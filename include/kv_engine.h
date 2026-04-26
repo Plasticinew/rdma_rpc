@@ -194,13 +194,17 @@ class LocalEngine : public Engine {
   bool read(const std::string key, std::string &value);
   bool write_block(uint64_t laddr, uint64_t raddr, uint64_t len, uint32_t rkey);
   bool read_block(uint64_t laddr, uint64_t raddr, uint64_t len, uint32_t rkey);
+  int read_remote_buffer(void *buf, uint64_t len, uint64_t remote_addr,
+                         uint32_t rkey);
+  int read_memory_node_status(MemoryNodeStatus& status);
 
   int allocate_remote_page(uint64_t& value);
   int allocate_remote_block(uint64_t& value, uint32_t& rkey);
   int allocate_remote_page_batch(uint64_t* addr, int num);
   int free_remote_page(uint64_t value);
   int free_remote_page_batch(uint64_t* addr, int num);
-  int get_global_rkey(uint32_t& global_rkey);
+  int get_global_rkey(uint32_t& global_rkey, uint64_t& memory_status_addr,
+                      uint32_t& memory_status_rkey);
 
  private:
  kv::ConnectionManager *m_rdma_conn_;
@@ -210,6 +214,8 @@ class LocalEngine : public Engine {
   std::mutex m_mutex_[SHARDING_NUM];
   RDMAMemPool *m_rdma_mem_pool_;
   uint16_t m_mnode_;
+  uint64_t m_memory_status_addr_ = 0;
+  uint32_t m_memory_status_rkey_ = 0;
 };
 
 /* Remote-side engine */
@@ -279,6 +285,8 @@ class RemoteEngine : public Engine {
 
   void* base_addr = nullptr;
   ibv_mr* global_mr = nullptr;
+  MemoryNodeStatus* memory_node_status_ = nullptr;
+  ibv_mr* memory_node_status_mr_ = nullptr;
 
   std::unordered_map<uint64_t, ibv_mr*> mrmap;
   std::mutex mrmap_mtx;

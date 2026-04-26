@@ -1,8 +1,15 @@
 #pragma once
 
+#include <algorithm>
+#include <atomic>
+#include <cassert>
+#include <cstdint>
+#include <iostream>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+
+#include "kv_engine.h"
 
 #define ALLOCATE_BUFFER_SIZE (512UL) // 16MB
 #define RECLAIM_ALLOCATE_BUFFER_SIZE (16 << 10) // 64MB
@@ -183,6 +190,7 @@ struct local_pool {
     int ret;
     remote_addrs = new uint64_t[capacity];
     assert(conn != nullptr);
+    assert(mnode_num > 0 && mnode_num <= MEM_NODE_NUM);
     while(length < MID_MEM_WATERMARK) {
       if (!batch_allocate(MAX_BATCH_SIZE)) {
         usleep(1000);
@@ -200,51 +208,123 @@ private:
   uint64_t capacity;
   uint64_t length;
   uint64_t batch_size;
+  uint32_t selection_log_count = 0;
+  static constexpr uint64_t kMnodeMask = (((uint64_t)0x7FUL) << 57);
+  static constexpr uint32_t kSelectionLogLimit = 8;
 
-  bool batch_allocate(uint64_t size) {
-    assert(size + length <= capacity);
+  struct batch_allocate_candidate {
+    uint16_t mnode;
+    uint64_t free_bytes;
+  };
+
+  uint16_t round_robin_distance(uint16_t mnode) const {
+    return (mnode + mnode_num - round_robin) % mnode_num;
+  }
+
+  void tag_remote_addr(uint64_t& addr, uint16_t mnode) {
+    // Preserve the original page address and encode the chosen memory node in the high bits.
+    addr &= ~kMnodeMask;
+    addr |= (static_cast<uint64_t>(mnode) << 57);
+  }
+
+  bool read_memory_node_status(uint16_t mnode, kv::MemoryNodeStatus& status) {
+    return conn[mnode].read_memory_node_status(status) == 0;
+  }
+
+  void tag_allocated_pages(uint16_t mnode, uint64_t start, uint64_t size) {
+    for (uint64_t i = 0; i < size; ++i) {
+      tag_remote_addr(remote_addrs[(start + i) % capacity], mnode);
+    }
+  }
+
+  bool allocate_batch_from_node(uint16_t mnode, uint64_t size) {
     int ret;
-    if(capacity - end >= size) {
-      ret = conn[round_robin].allocate_remote_page_batch(remote_addrs + end, size);
-      if(ret) {
-         std::cerr << "allocate_remote_page_batch fail on mnode "
-                   << round_robin << std::endl;
-         round_robin = (round_robin + 1) % mnode_num;
-         return false;
+    if (capacity - end >= size) {
+      ret = conn[mnode].allocate_remote_page_batch(remote_addrs + end, size);
+      if (ret) {
+        std::cerr << "allocate_remote_page_batch fail on mnode "
+                  << mnode << std::endl;
+        return false;
       }
-      for(uint64_t i = 0; i < size; ++i) {
-            if(round_robin != 0) {
-                remote_addrs[(end + i) % capacity] &= ~(((uint64_t)0x7FUL) << 57); // 清除高7位的m
-                // std::cout << "Malloc Remote address: " << remote_addrs[(end + i) % capacity] << ", ";
-                remote_addrs[(end + i) % capacity] += (((uint64_t)round_robin) << 57);
-                // std::cout << remote_addrs[(end + i) % capacity] << std::endl;
-            }
-        }
+      tag_allocated_pages(mnode, end, size);
     } else {
       uint64_t remote_addrs_tmp[MAX_BATCH_SIZE];
-      ret = conn[round_robin].allocate_remote_page_batch(remote_addrs_tmp, size);
-      if(ret) {
+      ret = conn[mnode].allocate_remote_page_batch(remote_addrs_tmp, size);
+      if (ret) {
         std::cerr << "allocate_remote_page_batch fail on mnode "
-                  << round_robin << std::endl;
-        round_robin = (round_robin + 1) % mnode_num;
+                  << mnode << std::endl;
         return false;
       }
       uint64_t size_first = capacity - end;
-      std::copy(remote_addrs_tmp, remote_addrs_tmp + size_first, remote_addrs + end);
-      std::copy(remote_addrs_tmp + size_first, remote_addrs_tmp + size, remote_addrs);
-      for(uint64_t i = 0; i < size; ++i) {
-        if(round_robin != 0) {
-            remote_addrs[(end + i) % capacity] &= ~(((uint64_t)0x7FUL) << 57); // 清除高7位的m
-            // std::cout << "Malloc Remote address: " << remote_addrs[(end + i) % capacity] << ", ";
-            remote_addrs[(end + i) % capacity] += (((uint64_t)round_robin) << 57);
-            // std::cout << remote_addrs[(end + i) % capacity] << std::endl;
-        }
+      std::copy(remote_addrs_tmp, remote_addrs_tmp + size_first,
+                remote_addrs + end);
+      std::copy(remote_addrs_tmp + size_first, remote_addrs_tmp + size,
+                remote_addrs);
+      tag_allocated_pages(mnode, end, size);
     }
-    }
-    round_robin = (round_robin + 1) % mnode_num;
+    round_robin = (mnode + 1) % mnode_num;
     end = (end + size) % capacity;
     length += size;
     return true;
+  }
+
+  void maybe_log_batch_selection(const batch_allocate_candidate* candidates,
+                                 uint16_t chosen_mnode, uint64_t size) {
+    if (selection_log_count >= kSelectionLogLimit) {
+      return;
+    }
+    std::cout << "[batch_allocate] size=" << size
+              << " rr_hint=" << round_robin
+              << " choose_mnode=" << chosen_mnode
+              << " candidates_free_bytes={";
+    for (uint16_t i = 0; i < mnode_num; ++i) {
+      if (i != 0) {
+        std::cout << ", ";
+      }
+      std::cout << candidates[i].mnode << ":" << candidates[i].free_bytes;
+    }
+    std::cout << "}" << std::endl;
+    selection_log_count++;
+  }
+
+  bool batch_allocate(uint64_t size) {
+    assert(size + length <= capacity);
+    batch_allocate_candidate candidates[MEM_NODE_NUM];
+    const uint64_t required_bytes = size << PAGE_SHIFT;
+    for (uint16_t i = 0; i < mnode_num; ++i) {
+      kv::MemoryNodeStatus status = {};
+      uint64_t free_bytes = 0;
+      if (read_memory_node_status(i, status)) {
+        free_bytes = status.free_bytes;
+      }
+      candidates[i] = {i, free_bytes};
+    }
+
+    // Prefer nodes with the most free memory; round_robin only breaks ties.
+    std::sort(candidates, candidates + mnode_num,
+              [this, required_bytes](const batch_allocate_candidate& lhs,
+                                     const batch_allocate_candidate& rhs) {
+                const bool lhs_has_capacity = lhs.free_bytes >= required_bytes;
+                const bool rhs_has_capacity = rhs.free_bytes >= required_bytes;
+                if (lhs_has_capacity != rhs_has_capacity) {
+                  return lhs_has_capacity > rhs_has_capacity;
+                }
+                if (lhs.free_bytes != rhs.free_bytes) {
+                  return lhs.free_bytes > rhs.free_bytes;
+                }
+                return round_robin_distance(lhs.mnode) <
+                       round_robin_distance(rhs.mnode);
+              });
+
+    for (uint16_t i = 0; i < mnode_num; ++i) {
+      if (allocate_batch_from_node(candidates[i].mnode, size)) {
+        maybe_log_batch_selection(candidates, candidates[i].mnode, size);
+        return true;
+      }
+    }
+
+    round_robin = (round_robin + 1) % mnode_num;
+    return false;
   }
 
   void batch_deallocate(uint64_t size) {
@@ -257,7 +337,7 @@ private:
         uint16_t mnode = (addr >> 57);
         if(mnode != 0) {
             // std::cout << "Free Remote address: " << addr << ", ";
-            addr &= ~(((uint64_t)0x7FUL) << 57); // 清除高4位的m
+            addr &= ~kMnodeMask; // 清除高位的mnode tag
             // std::cout << addr << std::endl;
         }
         ret = conn[mnode].free_remote_page(addr);
@@ -276,7 +356,7 @@ private:
           uint16_t mnode = (addr >> 57);
           if(mnode != 0 ) {
             // std::cout << "Free Remote address: " << addr << ", ";
-            addr &= ~(((uint64_t)0x7FUL) << 57); // 清除高7位的m
+            addr &= ~kMnodeMask; // 清除高位的mnode tag
             // std::cout << addr << std::endl;
           }
           ret = conn[mnode].free_remote_page(addr);
